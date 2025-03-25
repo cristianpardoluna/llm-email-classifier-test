@@ -1,4 +1,5 @@
 # Configuration and imports
+import uuid
 import os
 import json
 import pandas as pd
@@ -58,8 +59,11 @@ sample_emails = [
 class EmailProcessor:
     def __init__(self):
         """Initialize the email processor with OpenAI API key."""
-        self.client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
+        self.client = OpenAI(
+            api_key=os.getenv("OPENAI_API_KEY"),
+            organization=os.getenv("OPENAI_API_ORGANIZATION"),
+            project=os.getenv("OPENAI_API_PROJECT")
+        )
         # Define valid categories
         self.valid_categories = {
             "complaint", "inquiry", "feedback",
@@ -70,24 +74,97 @@ class EmailProcessor:
         """
         Classify an email using LLM.
         Returns the classification category or None if classification fails.
-        
-        TODO: 
+
+        TODO:
         1. Design and implement the classification prompt
         2. Make the API call with appropriate error handling
         3. Validate and return the classification
         """
-        pass
+        chat_classify = self.client.beta.chat.completions.parse(
+            model="gpt-4o",
+            messages=[
+            {
+                "role": "system",
+                "content": "Classify incoming e-mail."
+            }, {
+
+                "role": "user",
+                "content": json.dumps(email)
+            }],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "email_classification",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                        "category": {
+                            "type": "string",
+                            "enum": list(self.valid_categories) # JSON parseable
+                        }
+                        },
+                        "required": ["category"],
+                        "additionalProperties": False
+                    }
+                }
+            }
+        )
+        result = chat_classify.choices[0].message
+        if result.refusal: # handle refusal
+            return "other"
+
+        parsed = json.loads(result.content)
+        return parsed["category"]
 
     def generate_response(self, email: Dict, classification: str) -> Optional[str]:
         """
         Generate an automated response based on email classification.
-        
+
         TODO:
         1. Design the response generation prompt
         2. Implement appropriate response templates
         3. Add error handling
         """
-        pass
+
+        chat_response = self.client.beta.chat.completions.parse(
+            model="gpt-4o",
+            messages=[
+            {
+                "role": "system",
+                "content": f"Respond the {classification} e-mail."
+            }, {
+                "role": "user",
+                "content": json.dumps(email)
+            }],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "email_extraction",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {
+                        "subject": {
+                            "type": "string",
+                            "description": "The subject line of the email."
+                        },
+                        "body": {
+                            "type": "string",
+                            "description": "The main content or body of the email."
+                        }
+                        },
+                        "required": ["subject", "body"],
+                        "additionalProperties": False
+                    }
+                }
+            }
+        )
+        result = chat_response.choices[0].message
+        if result.refusal:
+            raise Exception("OpenAI refused to structure a response.")
+
+        return json.loads(result.content)
 
 
 class EmailAutomationSystem:
@@ -106,48 +183,80 @@ class EmailAutomationSystem:
         """
         Process a single email through the complete pipeline.
         Returns a dictionary with the processing results.
-        
+
         TODO:
         1. Implement the complete processing pipeline
         2. Add appropriate error handling
         3. Return processing results
         """
-        pass
+        # 1. classify e-mail
+        category = self.processor.classify_email(email)
+        # 2. generate a structured response
+        mail_response = self.processor.generate_response(email, category)
+        mail_response["id"] = str(uuid.uuid4())
+        mail_response["from"] = "assistant@example.com"
+        mail_response["timestamp"] = datetime.now().strftime("%d/%m/%Y, %H:%M:%S")
+        mail_response["category"] = category
+        # 3. get the handler and pass the response
+        handler = self.response_handlers.get(category)
+        handler(mail_response)
+        return {
+            "email_id": mail_response["id"],
+            "success": True,
+            "classification": mail_response["category"],
+            "response_sent": mail_response["body"],
+        }
 
     def _handle_complaint(self, email: Dict):
         """
         Handle complaint emails.
         TODO: Implement complaint handling logic
         """
-        pass
+        send_complaint_response(
+            email_id=email["id"],
+            response=email["body"]
+        )
 
     def _handle_inquiry(self, email: Dict):
         """
         Handle inquiry emails.
         TODO: Implement inquiry handling logic
         """
-        pass
+        create_urgent_ticket(
+            email_id=email["id"],
+            category=email["category"],
+            context=email["body"],
+        )
 
     def _handle_feedback(self, email: Dict):
         """
         Handle feedback emails.
         TODO: Implement feedback handling logic
         """
-        pass
+        log_customer_feedback(
+            email_id=email["id"],
+            feedback=email["body"]
+        )
 
     def _handle_support_request(self, email: Dict):
         """
         Handle support request emails.
         TODO: Implement support request handling logic
         """
-        pass
+        create_support_ticket(
+            email_id=email["id"],
+            context=email["body"],
+        )
 
     def _handle_other(self, email: Dict):
         """
         Handle other category emails.
         TODO: Implement handling logic for other categories
         """
-        pass
+        send_standard_response(
+            email_id=email["id"],
+            response=email["body"]
+        )
 
 # Mock service functions
 def send_complaint_response(email_id: str, response: str):
